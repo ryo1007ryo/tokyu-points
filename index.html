@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>東急ポイント比較シミュレーター</title>
+    <title>東急ポイント比較 & 距離検索</title>
     <style>
         :root { --tokyu-red: #e60012; --bg-color: #f4f7f6; }
         body { font-family: -apple-system, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: var(--bg-color); }
@@ -19,6 +19,7 @@
         
         .header-row { display: flex; justify-content: space-between; align-items: flex-start; }
         .facility-name { font-size: 1.1rem; font-weight: bold; }
+        .distance-info { font-size: 0.8rem; color: #666; margin-left: 5px; }
         .total-points { text-align: right; }
         .total-val { font-size: 1.5rem; font-weight: bold; color: var(--tokyu-red); }
         
@@ -29,6 +30,8 @@
         
         .breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #fcfcfc; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; color: #666; border: 1px inset #f0f0f0; }
         .rate-info { font-size: 0.75rem; color: #999; text-align: right; margin-top: 4px; }
+        
+        .location-btn { background: #007bff; color: white; border: none; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; width: 100%; margin-bottom: 10px; }
     </style>
 </head>
 <body>
@@ -37,6 +40,8 @@
         <h1>東急ポイント比較</h1>
         <div id="status" class="status">データを読み込み中...</div>
         
+        <button class="location-btn" onclick="requestLocation()">現在地を取得して距離を表示</button>
+
         <div class="input-group">
             <label>購入予定金額 (円)</label>
             <input type="number" id="amount" value="10000" oninput="update()">
@@ -64,6 +69,7 @@
 
         let masterFacilities = [];
         let masterCampaigns = [];
+        let userLocation = null;
 
         document.getElementById('targetDate').valueAsDate = new Date();
 
@@ -80,8 +86,10 @@
                         name: c[1].trim(), 
                         basic: parseFloat(c[2]) || 0, 
                         store: parseFloat(c[3]) || 0,
-                        creditTokyu: parseFloat(c[4]) || 0, // 新設：通常クレジット還元率
-                        creditSmart: parseFloat(c[5]) || 0  // 新設：スマート払い還元率
+                        creditTokyu: parseFloat(c[4]) || 0,
+                        creditSmart: parseFloat(c[5]) || 0,
+                        lat: parseFloat(c[6]) || null, // 緯度
+                        lng: parseFloat(c[7]) || null  // 経度
                     };
                 });
 
@@ -104,6 +112,33 @@
             }
         }
 
+        function requestLocation() {
+            if (!navigator.geolocation) {
+                alert("お使いのブラウザは位置情報に対応していません");
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(pos => {
+                userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                document.getElementById('status').innerText = '現在地を取得しました';
+                update();
+            }, err => {
+                alert("位置情報の取得に失敗しました");
+            });
+        }
+
+        // 2点間の距離(km)を計算する関数
+        function getDistance(lat1, lon1, lat2, lon2) {
+            if (!lat1 || !lon1 || !lat2 || !lon2) return null;
+            const R = 6371; // 地球の半径
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
         function update() {
             if (masterFacilities.length === 0) return;
 
@@ -118,39 +153,38 @@
                 });
                 
                 const totalAdditionalRate = activeCampaigns.reduce((sum, c) => sum + c.additionalRate, 0);
-                
-                // 加盟店ポイント（即時）の判定
-                // TOKYU CARD系はstore_rate、それ以外はbasic_rateを適用
                 const isTokyuPayment = (method === 'tokyu_card' || method === 'tokyu_smart');
                 const baseRate = isTokyuPayment ? f.store : f.basic;
                 const immediateRate = baseRate + totalAdditionalRate;
 
-                // クレジットポイント（後日）の判定
                 let creditRate = 0;
                 if (method === 'tokyu_card') creditRate = f.creditTokyu;
                 if (method === 'tokyu_smart') creditRate = f.creditSmart;
 
-                const immediatePoints = Math.floor(amount * immediateRate);
-                const creditPoints = Math.floor(amount * creditRate);
+                const distance = userLocation ? getDistance(userLocation.lat, userLocation.lng, f.lat, f.lng) : null;
 
                 return {
                     ...f,
-                    totalPoints: immediatePoints + creditPoints,
-                    immediatePoints,
-                    creditPoints,
+                    totalPoints: Math.floor(amount * immediateRate) + Math.floor(amount * creditRate),
+                    immediatePoints: Math.floor(amount * immediateRate),
+                    creditPoints: Math.floor(amount * creditRate),
                     totalRate: ((immediateRate + creditRate) * 100).toFixed(1),
+                    distance: distance,
                     activeCampaigns,
                     hasEntry: activeCampaigns.some(c => c.requiresEntry)
                 };
             });
 
+            // ソート順（距離がわかっていれば距離順にしたい場合はここを調整）
             calculated.sort((a, b) => b.totalPoints - a.totalPoints);
 
             document.getElementById('results').innerHTML = calculated.map((f, index) => `
                 <div class="result-item ${index === 0 ? 'rank-1' : ''}">
                     <div class="header-row">
                         <div>
-                            <div class="facility-name">${f.name}</div>
+                            <div class="facility-name">${f.name}
+                                ${f.distance ? `<span class="distance-info">📍${f.distance.toFixed(1)}km</span>` : ''}
+                            </div>
                             <div class="campaign-list">
                                 ${f.activeCampaigns.map(c => `<span class="badge badge-campaign">${c.name} (+${(c.additionalRate*100).toFixed(0)}%)</span>`).join('')}
                                 ${f.hasEntry ? '<span class="badge badge-entry">要エントリー</span>' : ''}
