@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>東急ポイント比較シミュレーター (URL修正版)</title>
+    <title>東急ポイント比較シミュレーター</title>
     <style>
         :root { --tokyu-red: #e60012; --bg-color: #f4f7f6; }
         body { font-family: -apple-system, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: var(--bg-color); }
@@ -43,10 +43,11 @@
         </div>
         <div class="input-group">
             <label>支払い方法</label>
-            <select id="cardType" onchange="update()">
-                <option value="basic">現金・ポイントカード (通常1%)</option>
-                <option value="credit" selected>東急カード決済 (通常3% + 0.5%)</option>
-                <option value="gold">東急カード決済 (ゴールド 3% + 1.0%)</option>
+            <select id="paymentMethod" onchange="update()">
+                <option value="cash">現金払い (通常1.0%)</option>
+                <option value="other_credit">他社クレジットカード払い (通常1.0%)</option>
+                <option value="tokyu_card" selected>TOKYU CARD払い</option>
+                <option value="tokyu_smart">TOKYU CARDスマート払い</option>
             </select>
         </div>
         <div class="input-group">
@@ -58,7 +59,6 @@
     <div id="results"></div>
 
     <script>
-        // 修正された最新のURL
         const URL_FACILITIES = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTgbOaI1waBfqiOLvukQaRkPq4ngqEbffAUjjc72sfj_c_UODSXsozYwQ2ijZ-pUd2lem3MVibhxFVW/pub?output=csv';
         const URL_CAMPAIGNS = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRzO3NLasGVUK3k_AZDIJh62INF72AZO1mECDFgflxq3ke0QQ0jiwjN7JJHX9b65rrwnxsVU-RySVgk/pub?output=csv';
 
@@ -67,81 +67,40 @@
 
         document.getElementById('targetDate').valueAsDate = new Date();
 
-async function init() {
-            const statusEl = document.getElementById('status');
+        async function init() {
             try {
-                statusEl.innerText = 'データを取得中...';
-                
-                const [resFac, resCam] = await Promise.all([
-                    fetch(URL_FACILITIES),
-                    fetch(URL_CAMPAIGNS)
-                ]);
-                
-                if (!resFac.ok) throw new Error(`施設マスタの取得に失敗 (HTTP ${resFac.status})`);
-                if (!resCam.ok) throw new Error(`キャンペーンマスタの取得に失敗 (HTTP ${resCam.status})`);
-
+                const [resFac, resCam] = await Promise.all([ fetch(URL_FACILITIES), fetch(URL_CAMPAIGNS) ]);
                 const textFac = await resFac.text();
                 const textCam = await resCam.text();
 
-                statusEl.innerText = 'データを解析中...';
+                masterFacilities = textFac.split('\n').slice(1).filter(r => r.trim()).map(row => {
+                    const c = row.split(',');
+                    return { 
+                        id: c[0].trim(), 
+                        name: c[1].trim(), 
+                        basic: parseFloat(c[2]) || 0, 
+                        store: parseFloat(c[3]) || 0,
+                        creditTokyu: parseFloat(c[4]) || 0, // 新設：通常クレジット還元率
+                        creditSmart: parseFloat(c[5]) || 0  // 新設：スマート払い還元率
+                    };
+                });
 
-                // 施設マスタパース
-                try {
-                    masterFacilities = textFac.split('\n')
-                        .slice(1)
-                        .filter(r => r.trim() && r.includes(',')) // 空行とカンマのない行を除外
-                        .map((row, i) => {
-                            const c = row.split(',');
-                            if (!c[0]) throw new Error(`施設マスタ ${i+2}行目のIDが空です`);
-                            return { 
-                                id: c[0].trim(), 
-                                name: c[1]?.trim() || '名称不明', 
-                                basic: parseFloat(c[2]) || 0, 
-                                store: parseFloat(c[3]) || 0 
-                            };
-                        });
-                } catch (e) {
-                    throw new Error(`施設マスタ解析エラー: ${e.message}`);
-                }
+                masterCampaigns = textCam.split('\n').slice(1).filter(r => r.trim()).map(row => {
+                    const c = row.split(',');
+                    return {
+                        facilityId: c[0].trim(),
+                        name: c[1].trim(),
+                        start: new Date(c[2].trim()),
+                        end: new Date(c[3].trim()),
+                        additionalRate: parseFloat(c[4]) || 0,
+                        requiresEntry: c[5]?.trim().toLowerCase() === 'true'
+                    };
+                });
 
-                // キャンペーンマスタパース
-                try {
-                    masterCampaigns = textCam.split('\n')
-                        .slice(1)
-                        .filter(r => r.trim() && r.includes(','))
-                        .map((row, i) => {
-                            const c = row.split(',');
-                            const startDate = new Date(c[2]?.trim());
-                            const endDate = new Date(c[3]?.trim());
-
-                            if (isNaN(startDate.getTime())) {
-                                throw new Error(`キャンペーンマスタ ${i+2}行目の開始日付が不正です: "${c[2]}"`);
-                            }
-
-                            return {
-                                facilityId: c[0].trim(),
-                                name: c[1]?.trim() || 'キャンペーン名なし',
-                                start: startDate,
-                                end: endDate,
-                                additionalRate: parseFloat(c[4]) || 0,
-                                requiresEntry: c[5]?.trim().toLowerCase() === 'true'
-                            };
-                        });
-                } catch (e) {
-                    throw new Error(`キャンペーン解析エラー: ${e.message}`);
-                }
-
-                statusEl.innerText = `最新データを同期しました（施設:${masterFacilities.length}件、CP:${masterCampaigns.length}件）`;
-                statusEl.style.color = 'green';
+                document.getElementById('status').innerText = '最新データを同期しました';
                 update();
-
             } catch (e) {
-                // エラー内容を画面に赤字で表示
-                statusEl.innerHTML = `<div style="color:red; background:#fff0f0; padding:10px; border-radius:5px; border:1px solid red;">
-                    <strong>読み込みエラー</strong><br>
-                    <small>${e.message}</small>
-                </div>`;
-                console.error("Detailed Error:", e);
+                document.getElementById('status').innerText = '読み込みエラー。設定を確認してください。';
             }
         }
 
@@ -149,7 +108,7 @@ async function init() {
             if (masterFacilities.length === 0) return;
 
             const amount = parseInt(document.getElementById('amount').value) || 0;
-            const payment = document.getElementById('cardType').value;
+            const method = document.getElementById('paymentMethod').value;
             const selectedDate = new Date(document.getElementById('targetDate').value);
             selectedDate.setHours(0,0,0,0);
 
@@ -159,9 +118,17 @@ async function init() {
                 });
                 
                 const totalAdditionalRate = activeCampaigns.reduce((sum, c) => sum + c.additionalRate, 0);
-                const baseRate = (payment === 'basic') ? f.basic : f.store;
+                
+                // 加盟店ポイント（即時）の判定
+                // TOKYU CARD系はstore_rate、それ以外はbasic_rateを適用
+                const isTokyuPayment = (method === 'tokyu_card' || method === 'tokyu_smart');
+                const baseRate = isTokyuPayment ? f.store : f.basic;
                 const immediateRate = baseRate + totalAdditionalRate;
-                const creditRate = (payment === 'credit') ? 0.005 : (payment === 'gold' ? 0.01 : 0);
+
+                // クレジットポイント（後日）の判定
+                let creditRate = 0;
+                if (method === 'tokyu_card') creditRate = f.creditTokyu;
+                if (method === 'tokyu_smart') creditRate = f.creditSmart;
 
                 const immediatePoints = Math.floor(amount * immediateRate);
                 const creditPoints = Math.floor(amount * creditRate);
@@ -183,7 +150,7 @@ async function init() {
                 <div class="result-item ${index === 0 ? 'rank-1' : ''}">
                     <div class="header-row">
                         <div>
-                            <div class="facility-name">${index + 1}. ${f.name}</div>
+                            <div class="facility-name">${f.name}</div>
                             <div class="campaign-list">
                                 ${f.activeCampaigns.map(c => `<span class="badge badge-campaign">${c.name} (+${(c.additionalRate*100).toFixed(0)}%)</span>`).join('')}
                                 ${f.hasEntry ? '<span class="badge badge-entry">要エントリー</span>' : ''}
