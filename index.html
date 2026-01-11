@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>東急ポイント比較シミュレーター (URL修正版)</title>
+    <style>
+        :root { --tokyu-red: #e60012; --bg-color: #f4f7f6; }
+        body { font-family: -apple-system, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: var(--bg-color); }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h1 { color: var(--tokyu-red); font-size: 1.4rem; text-align: center; margin-top: 0; }
+        .status { font-size: 0.75rem; color: #888; text-align: center; margin-bottom: 15px; }
+        .input-group { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 4px; font-weight: bold; font-size: 0.9rem; }
+        input[type="number"], select, input[type="date"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; font-size: 1rem; }
+        
+        .result-item { background: white; padding: 16px; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 5px solid transparent; }
+        .result-item.rank-1 { border-left-color: #ffd700; }
+        
+        .header-row { display: flex; justify-content: space-between; align-items: flex-start; }
+        .facility-name { font-size: 1.1rem; font-weight: bold; }
+        .total-points { text-align: right; }
+        .total-val { font-size: 1.5rem; font-weight: bold; color: var(--tokyu-red); }
+        
+        .campaign-list { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 4px; }
+        .badge { font-size: 0.7rem; padding: 3px 8px; border-radius: 4px; font-weight: bold; }
+        .badge-campaign { background: #fff9c4; color: #856404; border: 1px solid #ffe082; }
+        .badge-entry { background: #ff7043; color: white; }
+        
+        .breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #fcfcfc; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; color: #666; border: 1px inset #f0f0f0; }
+        .rate-info { font-size: 0.75rem; color: #999; text-align: right; margin-top: 4px; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>東急ポイント比較</h1>
+        <div id="status" class="status">データを読み込み中...</div>
+        
+        <div class="input-group">
+            <label>購入予定金額 (円)</label>
+            <input type="number" id="amount" value="10000" oninput="update()">
+        </div>
+        <div class="input-group">
+            <label>支払い方法</label>
+            <select id="cardType" onchange="update()">
+                <option value="basic">現金・ポイントカード (通常1%)</option>
+                <option value="credit" selected>東急カード決済 (通常3% + 0.5%)</option>
+                <option value="gold">東急カード決済 (ゴールド 3% + 1.0%)</option>
+            </select>
+        </div>
+        <div class="input-group">
+            <label>日付</label>
+            <input type="date" id="targetDate" onchange="update()">
+        </div>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        // 修正された最新のURL
+        const URL_FACILITIES = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTgbOaI1waBfqiOLvukQaRkPq4ngqEbffAUjjc72sfj_c_UODSXsozYwQ2ijZ-pUd2lem3MVibhxFVW/pub?output=csv';
+        const URL_CAMPAIGNS = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRzO3NLasGVUK3k_AZDIJh62INF72AZO1mECDFgflxq3ke0QQ0jiwjN7JJHX9b65rrwnxsVU-RySVgk/pub?output=csv';
+
+        let masterFacilities = [];
+        let masterCampaigns = [];
+
+        document.getElementById('targetDate').valueAsDate = new Date();
+
+async function init() {
+            const statusEl = document.getElementById('status');
+            try {
+                statusEl.innerText = 'データを取得中...';
+                
+                const [resFac, resCam] = await Promise.all([
+                    fetch(URL_FACILITIES),
+                    fetch(URL_CAMPAIGNS)
+                ]);
+                
+                if (!resFac.ok) throw new Error(`施設マスタの取得に失敗 (HTTP ${resFac.status})`);
+                if (!resCam.ok) throw new Error(`キャンペーンマスタの取得に失敗 (HTTP ${resCam.status})`);
+
+                const textFac = await resFac.text();
+                const textCam = await resCam.text();
+
+                statusEl.innerText = 'データを解析中...';
+
+                // 施設マスタパース
+                try {
+                    masterFacilities = textFac.split('\n')
+                        .slice(1)
+                        .filter(r => r.trim() && r.includes(',')) // 空行とカンマのない行を除外
+                        .map((row, i) => {
+                            const c = row.split(',');
+                            if (!c[0]) throw new Error(`施設マスタ ${i+2}行目のIDが空です`);
+                            return { 
+                                id: c[0].trim(), 
+                                name: c[1]?.trim() || '名称不明', 
+                                basic: parseFloat(c[2]) || 0, 
+                                store: parseFloat(c[3]) || 0 
+                            };
+                        });
+                } catch (e) {
+                    throw new Error(`施設マスタ解析エラー: ${e.message}`);
+                }
+
+                // キャンペーンマスタパース
+                try {
+                    masterCampaigns = textCam.split('\n')
+                        .slice(1)
+                        .filter(r => r.trim() && r.includes(','))
+                        .map((row, i) => {
+                            const c = row.split(',');
+                            const startDate = new Date(c[2]?.trim());
+                            const endDate = new Date(c[3]?.trim());
+
+                            if (isNaN(startDate.getTime())) {
+                                throw new Error(`キャンペーンマスタ ${i+2}行目の開始日付が不正です: "${c[2]}"`);
+                            }
+
+                            return {
+                                facilityId: c[0].trim(),
+                                name: c[1]?.trim() || 'キャンペーン名なし',
+                                start: startDate,
+                                end: endDate,
+                                additionalRate: parseFloat(c[4]) || 0,
+                                requiresEntry: c[5]?.trim().toLowerCase() === 'true'
+                            };
+                        });
+                } catch (e) {
+                    throw new Error(`キャンペーン解析エラー: ${e.message}`);
+                }
+
+                statusEl.innerText = `最新データを同期しました（施設:${masterFacilities.length}件、CP:${masterCampaigns.length}件）`;
+                statusEl.style.color = 'green';
+                update();
+
+            } catch (e) {
+                // エラー内容を画面に赤字で表示
+                statusEl.innerHTML = `<div style="color:red; background:#fff0f0; padding:10px; border-radius:5px; border:1px solid red;">
+                    <strong>読み込みエラー</strong><br>
+                    <small>${e.message}</small>
+                </div>`;
+                console.error("Detailed Error:", e);
+            }
+        }
+
+        function update() {
+            if (masterFacilities.length === 0) return;
+
+            const amount = parseInt(document.getElementById('amount').value) || 0;
+            const payment = document.getElementById('cardType').value;
+            const selectedDate = new Date(document.getElementById('targetDate').value);
+            selectedDate.setHours(0,0,0,0);
+
+            const calculated = masterFacilities.map(f => {
+                const activeCampaigns = masterCampaigns.filter(c => {
+                    return c.facilityId === f.id && selectedDate >= c.start && selectedDate <= c.end;
+                });
+                
+                const totalAdditionalRate = activeCampaigns.reduce((sum, c) => sum + c.additionalRate, 0);
+                const baseRate = (payment === 'basic') ? f.basic : f.store;
+                const immediateRate = baseRate + totalAdditionalRate;
+                const creditRate = (payment === 'credit') ? 0.005 : (payment === 'gold' ? 0.01 : 0);
+
+                const immediatePoints = Math.floor(amount * immediateRate);
+                const creditPoints = Math.floor(amount * creditRate);
+
+                return {
+                    ...f,
+                    totalPoints: immediatePoints + creditPoints,
+                    immediatePoints,
+                    creditPoints,
+                    totalRate: ((immediateRate + creditRate) * 100).toFixed(1),
+                    activeCampaigns,
+                    hasEntry: activeCampaigns.some(c => c.requiresEntry)
+                };
+            });
+
+            calculated.sort((a, b) => b.totalPoints - a.totalPoints);
+
+            document.getElementById('results').innerHTML = calculated.map((f, index) => `
+                <div class="result-item ${index === 0 ? 'rank-1' : ''}">
+                    <div class="header-row">
+                        <div>
+                            <div class="facility-name">${index + 1}. ${f.name}</div>
+                            <div class="campaign-list">
+                                ${f.activeCampaigns.map(c => `<span class="badge badge-campaign">${c.name} (+${(c.additionalRate*100).toFixed(0)}%)</span>`).join('')}
+                                ${f.hasEntry ? '<span class="badge badge-entry">要エントリー</span>' : ''}
+                            </div>
+                        </div>
+                        <div class="total-points">
+                            <div class="total-val">${f.totalPoints.toLocaleString()}<small>pt</small></div>
+                            <div class="rate-info">還元率 ${f.totalRate}%</div>
+                        </div>
+                    </div>
+                    <div class="breakdown">
+                        <div>即時付与: ${f.immediatePoints.toLocaleString()}</div>
+                        <div>後日加算: ${f.creditPoints.toLocaleString()}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        init();
+    </script>
+</body>
+</html>
